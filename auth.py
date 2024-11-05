@@ -2,26 +2,22 @@
 
 import os
 import sys
-import json
 import time
-from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from utils import exists, sanitize, save, extract_images, extract_styles
+from utils import (clean_up, exists, save,
+                   scrape_projects, switch_curriculums, update_links)
 
-wait_time = 7  # Time to wait for page to load
 
 # Login credentials
 email = os.getenv('email')
 password = os.getenv('password')
 home = 'https://intranet.alxswe.com'
-projects_page = 'https://intranet.alxswe.com/projects/current'
 
 # The offline page source to manipulate
 home_page = 'index.html'
@@ -38,7 +34,7 @@ chrome_options.add_argument('--incognito')
 chrome_options.add_argument('--headless')
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=chrome_options)
-wait = WebDriverWait(driver, wait_time)
+wait = WebDriverWait(driver, 7)
 
 # Load the offline page source if it exists else, load the url
 if os.path.exists(home_page):
@@ -50,84 +46,57 @@ else:
 # Wait till page is fully loaded
 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
 
-if driver.find_elements(By.CSS_SELECTOR, 'form#new_user'):
+if driver.find_elements(By.CSS_SELECTOR, 'form#new_user'):  # Am I to login?
     print('Logging in...')
+    save(driver, 'login.[extension]')  # Save the login page
+    update_links((driver.current_url, 'Intranet Login Screen'))
+
     driver.find_element(By.ID, 'user_email').send_keys(email)
     driver.find_element(By.ID, 'user_password').send_keys(password)
     driver.find_element(By.ID, 'user_remember_me').click()  # Check remember me
     driver.find_element(By.NAME, 'commit').click()  # Click the login button
 
-    # Wait for redirect to complete along with page loading
+    # Wait for redirect to complete, wait for full page loading
     wait.until(lambda d: d.current_url != home)
     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
-    print("Login successful")
+    print("Login successful: redirecting to intranet home page...")
 else:
     print('Loaded from offline page source ... DONE!')
 
-# Save Home page as PDF
-extract_styles(driver=driver)
+# Save intranet home page
 save(driver, 'home.[extension]')
+update_links((driver.current_url, 'Intranet Home Page'))
 
 print("Navigating to projects page...")
-driver.get(projects_page)
+driver.get('https://intranet.alxswe.com/projects/current')
 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
 print("Projects page loaded.")
 
 
-# Save page source for offline use
+# Create the base projects directory
 if not exists(projects_dir):
     print(f"Creating folder {projects_dir}")
     os.makedirs(projects_dir)
 else:
     print(f"Folder {projects_dir} already exists.")
 
-# print("Saving the fully rendered page with resources...")
-extract_styles(driver=driver)
+# Save the default project page
 save(driver, f'{projects_dir}/projects.[extension]')
+update_links((driver.current_url, 'Default Projects Page'))
 
 print('Getting ready to extract...')
-time.sleep(wait_time)
+time.sleep(4)
 
-soup = BeautifulSoup(driver.page_source, 'html.parser')
-groups = soup.select('.panel-group')  # Select all groups
-if not groups:
-    print("No groups found. Exiting...")
-    driver.quit()
-    exit(0)
-else:
-    print(f"Found {len(groups)} groups.")
+update_links(("Short Specializations", "#"))
+scrape_projects(driver, wait, "projects/specializations", home)
 
-print("Processing groups...")
-for group in groups:
-    # Get FOLDER name from .panel-heading .panel-title a
-    folder_name = group.select_one(
-        '.panel-heading .panel-title a').get_text(strip=True)
-    print(f"Processing group...{folder_name}")
+print("Switching curriculums...")
+switch_curriculums(driver, wait)
 
-    santized_folder_name = f'{projects_dir}/{sanitize(folder_name)}'
-    if not exists(santized_folder_name):
-        print(f"Creating folder {santized_folder_name}")
-        os.makedirs(santized_folder_name)
-    else:
-        print(f"Folder {santized_folder_name} already exists.")
+update_links(("#", "SE Foundations"))
+scrape_projects(driver, wait, "projects/foundations", home)
 
-    # Get all LINKS inside the group
-    links = group.select(
-        '.panel.panel-default ul.list-group li.list-group-item a')
-    for link in links:
-        path = f"{home}/{link['href']}"  # PATH
-        description = link.get_text(strip=True)
-        sanitized_description = sanitize(description)
-        print(f"Processing topic...{description}: {path}")
+clean_up()
 
-        # Visit the link and render the page content
-        driver.get(path)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
-        time.sleep(wait_time//3)
-
-        # Save the rendered HTML page within the FOLDER
-        file = f"{santized_folder_name}/{sanitized_description}.[extension]"
-        extract_styles(driver=driver)
-        save(driver, file)
-print("All groups processed.")
+print("All projects processed.")
 driver.quit()
